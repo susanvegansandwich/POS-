@@ -254,6 +254,17 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
       <div class="rows" id="tplRows"></div>
     </div>
     <p class="note">換市集時，套用範本或直接改上面的品項與價格。已送出的訂單不會受影響。</p>
+    <h2>出單機診斷</h2>
+    <p class="note" style="margin-top:0">連線了但印不出來時使用。依序按下面的按鈕，看出單機有沒有反應。</p>
+    <div class="stack">
+      <button class="btn ghost small" data-act="reconnect">重新選擇出單機</button>
+      <button class="btn ghost small" data-act="diagScan">列出藍牙通道</button>
+      <div id="diagOut"></div>
+      <button class="btn ghost small" data-act="diagEsc">送出文字測試（ESC/POS）</button>
+      <button class="btn ghost small" data-act="diagTspl">送出標籤測試（TSPL）</button>
+      <button class="btn ghost small" data-act="diagCpcl">送出標籤測試（CPCL）</button>
+      <div class="status" id="diagMsg" style="margin:0">尚未測試</div>
+    </div>
   </section>
 </div>
 
@@ -492,7 +503,10 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   /* ---------- 藍牙出單 ---------- */
   var SERVICES = ['000018f0-0000-1000-8000-00805f9b34fb', '0000ff00-0000-1000-8000-00805f9b34fb', '0000ffe0-0000-1000-8000-00805f9b34fb',
     '0000fff0-0000-1000-8000-00805f9b34fb', '0000ae30-0000-1000-8000-00805f9b34fb', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
-    '49535343-fe7d-4ae5-8fa9-9fafd205e455'];
+    '49535343-fe7d-4ae5-8fa9-9fafd205e455', '0000ffb0-0000-1000-8000-00805f9b34fb', '0000fee7-0000-1000-8000-00805f9b34fb',
+    '0000ff12-0000-1000-8000-00805f9b34fb', '0000ffe5-0000-1000-8000-00805f9b34fb', '0000af30-0000-1000-8000-00805f9b34fb',
+    '0000ffd0-0000-1000-8000-00805f9b34fb', '0000fe00-0000-1000-8000-00805f9b34fb', '0000ff10-0000-1000-8000-00805f9b34fb',
+    '6e400001-b5a3-f393-e0a9-e50e24dcca9e', 'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f', '0000180a-0000-1000-8000-00805f9b34fb'];
   var dev = null, chr = null;
   function setPrinter(on, name) {
     $('printerBtn').classList.toggle('on', on);
@@ -546,8 +560,53 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   async function printCanvas(canvas) {
     if (!chr) await connect();
     await writeAll(new Uint8Array([0x1b, 0x40]));
-    await writeAll(raster(canvas));
+    await sleep(60);
+    for (var y0 = 0; y0 < canvas.height; y0 += 96) {
+      var bh = Math.min(96, canvas.height - y0), b = document.createElement('canvas');
+      b.width = canvas.width; b.height = bh;
+      var bx = b.getContext('2d'); bx.fillStyle = '#fff'; bx.fillRect(0, 0, b.width, bh); bx.drawImage(canvas, 0, -y0);
+      await writeAll(raster(b));
+      await sleep(40);
+    }
     await writeAll(new Uint8Array([0x1b, 0x64, 4]));
+  }
+
+  /* ---------- 出單機診斷 ---------- */
+  var diagList = [];
+  function shortU(u) { return /^0000....-0000-1000-8000-00805f9b34fb$/.test(u) ? u.slice(4, 8) : u; }
+  async function diagScan() {
+    if (!btReady()) throw new Error('NOBT');
+    if (!dev) await connect();
+    var server = dev.gatt.connected ? dev.gatt : await dev.gatt.connect();
+    var svcs = await server.getPrimaryServices(); diagList = [];
+    for (var i = 0; i < svcs.length; i++) {
+      var cs = await svcs[i].getCharacteristics();
+      cs.forEach(function (c) {
+        var pr = []; if (c.properties.write) pr.push('write'); if (c.properties.writeWithoutResponse) pr.push('writeNoResp');
+        if (c.properties.notify) pr.push('notify'); if (c.properties.read) pr.push('read');
+        diagList.push({ svc: svcs[i].uuid, uuid: c.uuid, props: pr, ch: c });
+      });
+    }
+    var h = diagList.length ? '' : '沒有找到任何通道。請按「重新選擇出單機」再試。';
+    diagList.forEach(function (d, i) {
+      var can = d.props.indexOf('write') >= 0 || d.props.indexOf('writeNoResp') >= 0;
+      h += '<div class="tpl"><div class="n" style="font-size:13px;font-weight:500">服務 ' + esc(shortU(d.svc)) + '<small>通道 ' + esc(shortU(d.uuid)) + '　' + esc(d.props.join(' / ')) + (d.ch === chr ? '　（目前使用）' : '') + '</small></div>' +
+        (can ? '<button class="btn ghost small" data-act="useChar" data-i="' + i + '">改用</button>' : '') + '</div>';
+    });
+    $('diagOut').innerHTML = '<div class="rows">' + h + '</div>';
+  }
+  async function reconnectNew() {
+    try { if (dev && dev.gatt.connected) dev.gatt.disconnect(); } catch (e) {}
+    dev = null; chr = null; setPrinter(false);
+    await connect();
+  }
+  async function diagSend(kind) {
+    if (!chr) await connect();
+    var enc = new TextEncoder(), bytes;
+    if (kind === 'esc') bytes = new Uint8Array([0x1b, 0x40].concat(Array.from(enc.encode('HELLO 12345\n\n')), [0x1b, 0x64, 4]));
+    else if (kind === 'tspl') bytes = enc.encode('SIZE 50 mm,30 mm\r\nGAP 2 mm,0 mm\r\nCLS\r\nTEXT 20,20,"3",0,1,1,"HELLO"\r\nPRINT 1\r\n');
+    else bytes = enc.encode('! 0 200 200 240 1\r\nTEXT 4 0 20 20 HELLO\r\nPRINT\r\n');
+    await writeAll(bytes);
   }
   function btMessage(e) {
     if (e && e.message === 'NOBT') return '這個瀏覽器不支援藍牙列印。iPhone 請用 Bluefy 瀏覽器開啟，Android 請用 Chrome。';
@@ -737,6 +796,10 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     else if (a === 'void') arm('v' + id, function () { var o = state.orders.find(function (x) { return x.id === id; }); if (o) { o.void = true; save(); renderOrders(); toast('已作廢'); } });
     else if (a === 'paper') { state.width = { 50: 352, 58: 384, 80: 576 }[v]; save(); renderMenuEdit(); toast(v + 'mm 紙，印寬 ' + (curW() / 8) + 'mm'); }
     else if (a === 'split') { state.split = v === '1'; save(); renderMenuEdit(); toast(state.split ? '廚房單依品項分開印' : '廚房單合併一張'); }
+    else if (a === 'reconnect') { $('diagMsg').textContent = '請在清單選出單機…'; reconnectNew().then(function () { $('diagMsg').textContent = '已重新連線，請按「列出藍牙通道」。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
+    else if (a === 'diagScan') { $('diagMsg').textContent = '讀取中…'; diagScan().then(function () { $('diagMsg').textContent = '共 ' + diagList.length + ' 個通道。請把這個畫面截圖給我。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
+    else if (a === 'useChar') { var d = diagList[+b.dataset.i]; if (d) { chr = d.ch; diagScan().catch(function () {}); $('diagMsg').textContent = '已改用通道 ' + shortU(d.uuid) + '，請再按下面的測試。'; } }
+    else if (a === 'diagEsc' || a === 'diagTspl' || a === 'diagCpcl') { var k = a.slice(4).toLowerCase(); $('diagMsg').textContent = '送出中…'; diagSend(k).then(function () { $('diagMsg').textContent = '已送出 ' + k.toUpperCase() + ' 測試。出單機有沒有動、有沒有印出 HELLO？'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'testPrint') { toast('列印中…'); printCanvas(testTicket()).then(function () { toast('已送出測試單'); }).catch(function (er) { toast(btMessage(er)); }); }
     else if (a === 'copyCsv') copyCsv();
     else if (a === 'setNext') setNext();
