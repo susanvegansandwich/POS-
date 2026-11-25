@@ -261,9 +261,10 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
         <button data-act="imgMode" data-v="std" aria-pressed="false">圖片指令：標準</button>
         <button data-act="imgMode" data-v="esc" aria-pressed="false">圖片指令：相容</button>
       </div>
-      <div class="seg" id="slowSeg">
-        <button data-act="slow" data-v="0" aria-pressed="false">傳輸：一般</button>
-        <button data-act="slow" data-v="1" aria-pressed="false">傳輸：慢速</button>
+      <div class="seg three" id="slowSeg">
+        <button data-act="xfer" data-v="resp" aria-pressed="false">確認式（建議）</button>
+        <button data-act="xfer" data-v="fast" aria-pressed="false">一般</button>
+        <button data-act="xfer" data-v="slow" aria-pressed="false">慢速</button>
       </div>
       <button class="btn small" data-act="testPrint">送出圖片測試（測試列印）</button>
       <button class="btn ghost small" data-act="reconnect">重新選擇出單機</button>
@@ -314,7 +315,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     { id: 'm4', name: '水牛城手撕菇', price: 210 }
   ];
   var NOTE_CHIPS = ['不要香菜', '少辣', '加辣', '醬料分開', '不要餐具'];
-  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 352, offset: 0, split: true, imgMode: 'std', slow: false };
+  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 376, offset: 96, split: true, imgMode: 'std', slow: false, xfer: 'resp' };
   var cart = {}, orderType = '外帶', chipsOn = {}, tab = 'order', lastOrder = null, armed = null, settleDate = null;
 
   function load() {
@@ -555,17 +556,21 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   var chunk = 100;
   async function writeAll(bytes) {
-    var i = 0;
+    var mode = state.xfer || 'resp', i = 0;
+    var size = mode === 'slow' ? 20 : (mode === 'resp' ? 100 : chunk);
     while (i < bytes.length) {
-      var part = bytes.slice(i, i + (state.slow ? 20 : chunk));
+      var part = bytes.slice(i, i + size);
       try {
-        if (chr.properties.writeWithoutResponse) await chr.writeValueWithoutResponse(part); else await chr.writeValue(part);
+        if (mode === 'resp' && chr.properties.write) {
+          if (chr.writeValueWithResponse) await chr.writeValueWithResponse(part); else await chr.writeValue(part);
+        } else if (chr.properties.writeWithoutResponse) await chr.writeValueWithoutResponse(part);
+        else await chr.writeValue(part);
       } catch (e) {
-        if (chunk > 20) { chunk = 20; continue; }
+        if (size > 20) { size = 20; chunk = 20; continue; }
         throw e;
       }
       i += part.length;
-      await sleep(state.slow ? 25 : (chunk > 20 ? 12 : 8));
+      if (mode === 'slow') await sleep(25); else if (mode === 'fast') await sleep(chunk > 20 ? 12 : 8);
     }
   }
   async function escImage(canvas) {
@@ -597,7 +602,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
       b.width = canvas.width; b.height = bh;
       var bx = b.getContext('2d'); bx.fillStyle = '#fff'; bx.fillRect(0, 0, b.width, bh); bx.drawImage(canvas, 0, -y0);
       await writeAll(raster(b));
-      await sleep(40);
+      await sleep(state.xfer === 'resp' ? 0 : 40);
     }
     await writeAll(new Uint8Array([0x1b, 0x64, 4]));
   }
@@ -793,11 +798,11 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   /* ---------- 菜單編輯 ---------- */
   function renderMenuEdit() {
     $('shopInp').value = state.shop;
-    var PRE = { 50: 352, 58: 384, 80: 576 };
+    var PRE = { 50: 376, 58: 384, 80: 576 };
     document.querySelectorAll('#paperSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(curW() === PRE[x.dataset.v])); });
     document.querySelectorAll('#splitSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.split !== false) === (x.dataset.v === '1'))); });
     document.querySelectorAll('#imgSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.imgMode || 'std') === x.dataset.v)); });
-    document.querySelectorAll('#slowSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(!!state.slow === (x.dataset.v === '1'))); });
+    document.querySelectorAll('#slowSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.xfer || 'resp') === x.dataset.v)); });
     if (document.activeElement !== $('widthInp')) $('widthInp').value = curW();
     if (document.activeElement !== $('offInp')) $('offInp').value = curOff();
     $('editRows').innerHTML = state.menu.map(function (it) {
@@ -842,10 +847,10 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     else if (a === 'connect') connect().then(function () { toast('出單機已連線'); }).catch(function (er) { toast(btMessage(er)); });
     else if (a === 'view') { var o = state.orders.find(function (x) { return x.id === id; }); if (o) openTickets(o, false); }
     else if (a === 'void') arm('v' + id, function () { var o = state.orders.find(function (x) { return x.id === id; }); if (o) { o.void = true; save(); renderOrders(); toast('已作廢'); } });
-    else if (a === 'paper') { state.width = { 50: 352, 58: 384, 80: 576 }[v]; save(); renderMenuEdit(); toast(v + 'mm 紙，印寬 ' + (curW() / 8) + 'mm'); }
+    else if (a === 'paper') { state.width = { 50: 376, 58: 384, 80: 576 }[v]; state.offset = v === '50' ? 96 : 0; save(); renderMenuEdit(); toast(v + 'mm 紙，印寬 ' + (curW() / 8) + 'mm'); }
     else if (a === 'split') { state.split = v === '1'; save(); renderMenuEdit(); toast(state.split ? '廚房單依品項分開印' : '廚房單合併一張'); }
     else if (a === 'imgMode') { state.imgMode = v; save(); renderMenuEdit(); toast(v === 'esc' ? '圖片指令：相容' : '圖片指令：標準'); }
-    else if (a === 'slow') { state.slow = v === '1'; save(); renderMenuEdit(); toast(state.slow ? '傳輸：慢速' : '傳輸：一般'); }
+    else if (a === 'xfer') { state.xfer = v; save(); renderMenuEdit(); toast('傳輸：' + (v === 'resp' ? '確認式' : v === 'fast' ? '一般' : '慢速')); }
     else if (a === 'reconnect') { $('diagMsg').textContent = '請在清單選出單機…'; reconnectNew().then(function () { $('diagMsg').textContent = '已重新連線，請按「列出藍牙通道」。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'diagScan') { $('diagMsg').textContent = '讀取中…'; diagScan().then(function () { $('diagMsg').textContent = '共 ' + diagList.length + ' 個通道。請把這個畫面截圖給我。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'useChar') { var d = diagList[+b.dataset.i]; if (d) { chr = d.ch; state.chan = { svc: d.svc, uuid: d.uuid }; save(); diagScan().catch(function () {}); $('diagMsg').textContent = '已改用通道 ' + shortU(d.uuid) + '，請再按下面的測試。'; } }
