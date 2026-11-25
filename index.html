@@ -260,6 +260,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
       <button class="btn ghost small" data-act="reconnect">重新選擇出單機</button>
       <button class="btn ghost small" data-act="diagScan">列出藍牙通道</button>
       <div id="diagOut"></div>
+      <button class="btn small" data-act="diagAuto">自動測試所有通道（每個印一行編號）</button>
       <button class="btn ghost small" data-act="diagEsc">送出文字測試（ESC/POS）</button>
       <button class="btn ghost small" data-act="diagTspl">送出標籤測試（TSPL）</button>
       <button class="btn ghost small" data-act="diagCpcl">送出標籤測試（CPCL）</button>
@@ -514,6 +515,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   }
   function btReady() { return !!(navigator.bluetooth && navigator.bluetooth.requestDevice); }
   async function findChar(server) {
+    if (state.chan) { try { var sv = await server.getPrimaryService(state.chan.svc); return await sv.getCharacteristic(state.chan.uuid); } catch (e) {} }
     var svcs = await server.getPrimaryServices();
     for (var i = 0; i < svcs.length; i++) {
       var cs = await svcs[i].getCharacteristics();
@@ -590,10 +592,25 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     var h = diagList.length ? '' : '沒有找到任何通道。請按「重新選擇出單機」再試。';
     diagList.forEach(function (d, i) {
       var can = d.props.indexOf('write') >= 0 || d.props.indexOf('writeNoResp') >= 0;
-      h += '<div class="tpl"><div class="n" style="font-size:13px;font-weight:500">服務 ' + esc(shortU(d.svc)) + '<small>通道 ' + esc(shortU(d.uuid)) + '　' + esc(d.props.join(' / ')) + (d.ch === chr ? '　（目前使用）' : '') + '</small></div>' +
+      h += '<div class="tpl"><div class="n" style="font-size:13px;font-weight:500">#' + (i + 1) + '　服務 ' + esc(shortU(d.svc)) + '<small>通道 ' + esc(shortU(d.uuid)) + '　' + esc(d.props.join(' / ')) + (d.ch === chr ? '　（目前使用）' : '') + '</small></div>' +
         (can ? '<button class="btn ghost small" data-act="useChar" data-i="' + i + '">改用</button>' : '') + '</div>';
     });
     $('diagOut').innerHTML = '<div class="rows">' + h + '</div>';
+  }
+  async function diagAuto() {
+    var n = 0, enc = new TextEncoder();
+    for (var i = 0; i < diagList.length; i++) {
+      var d = diagList[i];
+      if (d.props.indexOf('write') < 0 && d.props.indexOf('writeNoResp') < 0) continue;
+      chr = d.ch;
+      $('diagMsg').textContent = '測試 #' + (i + 1) + '…';
+      try {
+        await writeAll(new Uint8Array([0x1b, 0x40].concat(Array.from(enc.encode('CH #' + (i + 1) + ' ' + shortU(d.uuid).slice(0, 8) + '\n\n')), [0x1b, 0x64, 3])));
+        n++;
+      } catch (e) {}
+      await sleep(1800);
+    }
+    return n;
   }
   async function reconnectNew() {
     try { if (dev && dev.gatt.connected) dev.gatt.disconnect(); } catch (e) {}
@@ -798,7 +815,8 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     else if (a === 'split') { state.split = v === '1'; save(); renderMenuEdit(); toast(state.split ? '廚房單依品項分開印' : '廚房單合併一張'); }
     else if (a === 'reconnect') { $('diagMsg').textContent = '請在清單選出單機…'; reconnectNew().then(function () { $('diagMsg').textContent = '已重新連線，請按「列出藍牙通道」。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'diagScan') { $('diagMsg').textContent = '讀取中…'; diagScan().then(function () { $('diagMsg').textContent = '共 ' + diagList.length + ' 個通道。請把這個畫面截圖給我。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
-    else if (a === 'useChar') { var d = diagList[+b.dataset.i]; if (d) { chr = d.ch; diagScan().catch(function () {}); $('diagMsg').textContent = '已改用通道 ' + shortU(d.uuid) + '，請再按下面的測試。'; } }
+    else if (a === 'useChar') { var d = diagList[+b.dataset.i]; if (d) { chr = d.ch; state.chan = { svc: d.svc, uuid: d.uuid }; save(); diagScan().catch(function () {}); $('diagMsg').textContent = '已改用通道 ' + shortU(d.uuid) + '，請再按下面的測試。'; } }
+    else if (a === 'diagAuto') { if (!diagList.length) { $('diagMsg').textContent = '請先按「列出藍牙通道」。'; } else { $('diagMsg').textContent = '測試中，請看出單機…'; diagAuto().then(function (n) { $('diagMsg').textContent = '已測試 ' + n + ' 個通道。紙上印出的 #編號，就是可用的通道，請按該編號旁的「改用」。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); } }
     else if (a === 'diagEsc' || a === 'diagTspl' || a === 'diagCpcl') { var k = a.slice(4).toLowerCase(); $('diagMsg').textContent = '送出中…'; diagSend(k).then(function () { $('diagMsg').textContent = '已送出 ' + k.toUpperCase() + ' 測試。出單機有沒有動、有沒有印出 HELLO？'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'testPrint') { toast('列印中…'); printCanvas(testTicket()).then(function () { toast('已送出測試單'); }).catch(function (er) { toast(btMessage(er)); }); }
     else if (a === 'copyCsv') copyCsv();
