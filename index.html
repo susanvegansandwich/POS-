@@ -246,6 +246,12 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
       <button data-act="split" data-v="0" aria-pressed="false">合併一張</button>
     </div>
     <p class="note">分開印時，每個品項一張單，都印同一個取餐單號，並標示第幾張、共幾張。</p>
+    <h2>送出後</h2>
+    <div class="seg" id="autoSeg">
+      <button data-act="auto" data-v="0" aria-pressed="false">手動逐張列印</button>
+      <button data-act="auto" data-v="1" aria-pressed="false">自動全部列印</button>
+    </div>
+    <p class="note">機器要手撕單時選手動：送出後逐張按「印這張」，撕完再印下一張。</p>
     <h2>本次菜單</h2>
     <div class="rows" id="editRows"></div>
     <div style="margin-top:8px"><button class="btn ghost small" data-act="addItem">＋ 新增品項</button></div>
@@ -300,10 +306,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   <h3 id="mTitle">單據</h3>
   <div class="status" id="mStatus"></div>
   <div class="tickets" id="mTickets"></div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-    <button class="btn ghost small" data-act="reprint" data-v="customer">印客人單</button>
-    <button class="btn ghost small" data-act="reprint" data-v="kitchen">印廚房單</button>
-  </div>
+  <button class="btn ghost small" style="width:100%;margin-bottom:8px" data-act="reprintAll">全部連續印出</button>
   <button class="btn" style="width:100%" data-act="closeModal">完成，下一單</button>
 </div></div>
 <div class="toast" id="toast" hidden></div>
@@ -319,7 +322,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     { id: 'm4', name: '水牛城手撕菇', price: 210 }
   ];
   var NOTE_CHIPS = ['不要香菜', '少辣', '加辣', '醬料分開', '不要餐具'];
-  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 376, offset: 96, split: true, imgMode: 'std', slow: false, xfer: 'resp' };
+  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 376, offset: 96, split: true, imgMode: 'std', slow: false, xfer: 'resp', autoPrint: false };
   var cart = {}, orderType = '外帶', chipsOn = {}, tab = 'order', lastOrder = null, armed = null, settleDate = null;
 
   function load() {
@@ -392,7 +395,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     cart = {}; chipsOn = {}; $('noteInp').value = ''; $('tableInp').value = '';
     renderMenu(); renderChips();
     window.scrollTo(0, 0);
-    enqueuePrint(order);
+    if (state.autoPrint) enqueuePrint(order); else openTickets(order, true);
   }
 
   /* ---------- 單據繪製（58mm = 384 點） ---------- */
@@ -673,20 +676,22 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
 
   /* ---------- 單據視窗 ---------- */
   function setStatus(msg, err) { var s = $('mStatus'); s.textContent = msg; s.classList.toggle('err', !!err); }
+  var ticketList = [];
   function openTickets(o, auto) {
     lastOrder = o;
     $('mTitle').textContent = '單號 ' + pad(o.no) + '　' + money(o.total);
     var cc = makeTicket('customer', o), ks = kitchenSet(o);
     var box = $('mTickets'); box.innerHTML = '';
-    [['客人單', cc]].concat(ks.map(function (c, i) { return ['廚房單' + (ks.length > 1 ? ' ' + (i + 1) + '/' + ks.length : ''), c]; })).forEach(function (p) {
-      var d = document.createElement('div'); d.className = 'tk'; d.appendChild(p[1]);
-      var l = document.createElement('div'); l.textContent = p[0]; d.appendChild(l); box.appendChild(d);
+    ticketList = [{ label: '客人單', canvas: cc }].concat(ks.map(function (c, i) { return { label: '廚房單' + (ks.length > 1 ? ' ' + (i + 1) + '/' + ks.length : ''), canvas: c }; }));
+    ticketList.forEach(function (t, idx) {
+      var d = document.createElement('div'); d.className = 'tk'; d.appendChild(t.canvas);
+      var l = document.createElement('div'); l.textContent = t.label; l.style.marginBottom = '6px'; d.appendChild(l);
+      var pb = document.createElement('button'); pb.className = 'btn small'; pb.style.width = '192px'; pb.dataset.act = 'printTk'; pb.dataset.i = idx; pb.textContent = '印這張'; d.appendChild(pb);
+      box.appendChild(d);
     });
     $('modal').classList.add('open');
-    if (auto) {
-      if (chr) { setStatus('列印中…'); printBoth(o); }
-      else setStatus(btReady() ? '出單機尚未連線。按右上角「連接出單機」後，再按下方按鈕補印。' : '這個瀏覽器無法藍牙列印，單據已預覽，訂單已儲存。', false);
-    } else setStatus('可重印這張訂單的單據。', false);
+    var hint = chr ? '按每張下方的「印這張」，撕下後再印下一張。' : (btReady() ? '出單機尚未連線。請先到點餐頁按右上角「連接出單機」。' : '這個瀏覽器無法藍牙列印，單據僅供預覽。');
+    setStatus((auto ? '訂單已儲存。' : '') + hint, false);
   }
   var printQ = [], failedQ = [], printing = false, pT;
   function pstat(kind, msg) {
@@ -726,6 +731,13 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
       var ks = kitchenSet(o);
       for (var i = 0; i < ks.length; i++) { await sleep(300); await printCanvas(ks[i]); }
       setStatus('已印出客人單 1 張、廚房單 ' + ks.length + ' 張。');
+    } catch (e) { setStatus(btMessage(e), true); }
+  }
+  async function reprintAll() {
+    setStatus('列印中…');
+    try {
+      for (var i = 0; i < ticketList.length; i++) { await printCanvas(ticketList[i].canvas); await sleep(300); }
+      setStatus('已全部印出。');
     } catch (e) { setStatus(btMessage(e), true); }
   }
   async function reprint(kind) {
@@ -837,6 +849,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     $('shopInp').value = state.shop;
     var PRE = { 50: 376, 58: 384, 80: 576 };
     document.querySelectorAll('#paperSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(curW() === PRE[x.dataset.v])); });
+    document.querySelectorAll('#autoSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(!!state.autoPrint === (x.dataset.v === '1'))); });
     document.querySelectorAll('#splitSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.split !== false) === (x.dataset.v === '1'))); });
     document.querySelectorAll('#imgSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.imgMode || 'std') === x.dataset.v)); });
     document.querySelectorAll('#slowSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.xfer || 'resp') === x.dataset.v)); });
@@ -882,11 +895,21 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     else if (a === 'retryPrint') retryPrint();
     else if (a === 'closeModal') $('modal').classList.remove('open');
     else if (a === 'reprint') reprint(v);
+    else if (a === 'reprintAll') reprintAll();
+    else if (a === 'printTk') {
+      var t = ticketList[+b.dataset.i];
+      if (t) {
+        b.disabled = true; setStatus('列印中…');
+        printCanvas(t.canvas).then(function () { b.textContent = '已印出 ✓ 再印一次'; b.disabled = false; setStatus('已印出' + t.label + '。請撕下後再印下一張。'); })
+          .catch(function (er) { b.disabled = false; setStatus(btMessage(er), true); });
+      }
+    }
     else if (a === 'connect') connect().then(function () { toast('出單機已連線'); }).catch(function (er) { toast(btMessage(er)); });
     else if (a === 'view') { var o = state.orders.find(function (x) { return x.id === id; }); if (o) openTickets(o, false); }
     else if (a === 'void') arm('v' + id, function () { var o = state.orders.find(function (x) { return x.id === id; }); if (o) { o.void = true; save(); renderOrders(); toast('已作廢'); } });
     else if (a === 'paper') { state.width = { 50: 376, 58: 384, 80: 576 }[v]; state.offset = v === '50' ? 96 : 0; save(); renderMenuEdit(); toast(v + 'mm 紙，印寬 ' + (curW() / 8) + 'mm'); }
     else if (a === 'split') { state.split = v === '1'; save(); renderMenuEdit(); toast(state.split ? '廚房單依品項分開印' : '廚房單合併一張'); }
+    else if (a === 'auto') { state.autoPrint = v === '1'; save(); renderMenuEdit(); toast(state.autoPrint ? '送出後自動全部列印' : '送出後手動逐張列印'); }
     else if (a === 'imgMode') { state.imgMode = v; save(); renderMenuEdit(); toast(v === 'esc' ? '圖片指令：相容' : '圖片指令：標準'); }
     else if (a === 'xfer') { state.xfer = v; save(); renderMenuEdit(); toast('傳輸：' + (v === 'resp' ? '確認式' : v === 'fast' ? '一般' : '慢速')); }
     else if (a === 'reconnect') { $('diagMsg').textContent = '請在清單選出單機…'; reconnectNew().then(function () { $('diagMsg').textContent = '已重新連線，請按「列出藍牙通道」。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
