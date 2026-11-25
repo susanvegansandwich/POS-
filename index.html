@@ -257,6 +257,15 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     <h2>出單機診斷</h2>
     <p class="note" style="margin-top:0">連線了但印不出來時使用。依序按下面的按鈕，看出單機有沒有反應。</p>
     <div class="stack">
+      <div class="seg" id="imgSeg">
+        <button data-act="imgMode" data-v="std" aria-pressed="false">圖片指令：標準</button>
+        <button data-act="imgMode" data-v="esc" aria-pressed="false">圖片指令：相容</button>
+      </div>
+      <div class="seg" id="slowSeg">
+        <button data-act="slow" data-v="0" aria-pressed="false">傳輸：一般</button>
+        <button data-act="slow" data-v="1" aria-pressed="false">傳輸：慢速</button>
+      </div>
+      <button class="btn small" data-act="testPrint">送出圖片測試（測試列印）</button>
       <button class="btn ghost small" data-act="reconnect">重新選擇出單機</button>
       <button class="btn ghost small" data-act="diagScan">列出藍牙通道</button>
       <div id="diagOut"></div>
@@ -305,7 +314,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     { id: 'm4', name: '水牛城手撕菇', price: 210 }
   ];
   var NOTE_CHIPS = ['不要香菜', '少辣', '加辣', '醬料分開', '不要餐具'];
-  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 352, offset: 0, split: true };
+  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 352, offset: 0, split: true, imgMode: 'std', slow: false };
   var cart = {}, orderType = '外帶', chipsOn = {}, tab = 'order', lastOrder = null, armed = null, settleDate = null;
 
   function load() {
@@ -548,7 +557,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   async function writeAll(bytes) {
     var i = 0;
     while (i < bytes.length) {
-      var part = bytes.slice(i, i + chunk);
+      var part = bytes.slice(i, i + (state.slow ? 20 : chunk));
       try {
         if (chr.properties.writeWithoutResponse) await chr.writeValueWithoutResponse(part); else await chr.writeValue(part);
       } catch (e) {
@@ -556,14 +565,34 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
         throw e;
       }
       i += part.length;
-      await sleep(chunk > 20 ? 12 : 8);
+      await sleep(state.slow ? 25 : (chunk > 20 ? 12 : 8));
     }
+  }
+  async function escImage(canvas) {
+    var w = canvas.width, h = canvas.height, d = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    await writeAll(new Uint8Array([0x1b, 0x33, 24]));
+    for (var y0 = 0; y0 < h; y0 += 24) {
+      var row = [0x1b, 0x2a, 33, w & 255, w >> 8];
+      for (var x = 0; x < w; x++) for (var k = 0; k < 3; k++) {
+        var by = 0;
+        for (var bt = 0; bt < 8; bt++) {
+          var y = y0 + k * 8 + bt;
+          if (y < h) { var p = (y * w + x) * 4; if (d[p] * 0.3 + d[p + 1] * 0.59 + d[p + 2] * 0.11 < 150) by |= 0x80 >> bt; }
+        }
+        row.push(by);
+      }
+      row.push(0x0a);
+      await writeAll(new Uint8Array(row));
+      await sleep(30);
+    }
+    await writeAll(new Uint8Array([0x1b, 0x32]));
   }
   async function printCanvas(canvas) {
     if (!chr) await connect();
     await writeAll(new Uint8Array([0x1b, 0x40]));
     await sleep(60);
-    for (var y0 = 0; y0 < canvas.height; y0 += 96) {
+    if (state.imgMode === 'esc') { await escImage(canvas); }
+    else for (var y0 = 0; y0 < canvas.height; y0 += 96) {
       var bh = Math.min(96, canvas.height - y0), b = document.createElement('canvas');
       b.width = canvas.width; b.height = bh;
       var bx = b.getContext('2d'); bx.fillStyle = '#fff'; bx.fillRect(0, 0, b.width, bh); bx.drawImage(canvas, 0, -y0);
@@ -767,6 +796,8 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     var PRE = { 50: 352, 58: 384, 80: 576 };
     document.querySelectorAll('#paperSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(curW() === PRE[x.dataset.v])); });
     document.querySelectorAll('#splitSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.split !== false) === (x.dataset.v === '1'))); });
+    document.querySelectorAll('#imgSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.imgMode || 'std') === x.dataset.v)); });
+    document.querySelectorAll('#slowSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(!!state.slow === (x.dataset.v === '1'))); });
     if (document.activeElement !== $('widthInp')) $('widthInp').value = curW();
     if (document.activeElement !== $('offInp')) $('offInp').value = curOff();
     $('editRows').innerHTML = state.menu.map(function (it) {
@@ -813,6 +844,8 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     else if (a === 'void') arm('v' + id, function () { var o = state.orders.find(function (x) { return x.id === id; }); if (o) { o.void = true; save(); renderOrders(); toast('已作廢'); } });
     else if (a === 'paper') { state.width = { 50: 352, 58: 384, 80: 576 }[v]; save(); renderMenuEdit(); toast(v + 'mm 紙，印寬 ' + (curW() / 8) + 'mm'); }
     else if (a === 'split') { state.split = v === '1'; save(); renderMenuEdit(); toast(state.split ? '廚房單依品項分開印' : '廚房單合併一張'); }
+    else if (a === 'imgMode') { state.imgMode = v; save(); renderMenuEdit(); toast(v === 'esc' ? '圖片指令：相容' : '圖片指令：標準'); }
+    else if (a === 'slow') { state.slow = v === '1'; save(); renderMenuEdit(); toast(state.slow ? '傳輸：慢速' : '傳輸：一般'); }
     else if (a === 'reconnect') { $('diagMsg').textContent = '請在清單選出單機…'; reconnectNew().then(function () { $('diagMsg').textContent = '已重新連線，請按「列出藍牙通道」。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'diagScan') { $('diagMsg').textContent = '讀取中…'; diagScan().then(function () { $('diagMsg').textContent = '共 ' + diagList.length + ' 個通道。請把這個畫面截圖給我。'; }).catch(function (er) { $('diagMsg').textContent = btMessage(er); }); }
     else if (a === 'useChar') { var d = diagList[+b.dataset.i]; if (d) { chr = d.ch; state.chan = { svc: d.svc, uuid: d.uuid }; save(); diagScan().catch(function () {}); $('diagMsg').textContent = '已改用通道 ' + shortU(d.uuid) + '，請再按下面的測試。'; } }
