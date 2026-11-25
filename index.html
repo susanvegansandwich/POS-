@@ -80,6 +80,7 @@ h2 { font-size: 13px; letter-spacing: .12em; color: var(--ink-soft); font-weight
 .row.has { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
 
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg.three { grid-template-columns: repeat(3, 1fr); }
 .seg button { min-height: 48px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-weight: 700; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .field { width: 100%; min-height: 48px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }
@@ -223,6 +224,24 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   <section class="page" id="p-menu">
     <h2>店名（印在客人單上）</h2>
     <input class="field" id="shopInp" autocomplete="off">
+    <h2>出單機紙寬</h2>
+    <div class="seg three" id="paperSeg">
+      <button data-act="paper" data-v="50" aria-pressed="false">50mm 紙</button>
+      <button data-act="paper" data-v="58" aria-pressed="false">58mm 紙</button>
+      <button data-act="paper" data-v="80" aria-pressed="false">80mm 紙</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+      <label class="note" style="margin:0">印寬（點）<input class="field num" id="widthInp" inputmode="numeric" aria-label="印寬（點）"></label>
+      <label class="note" style="margin:0">左側留白（點）<input class="field num" id="offInp" inputmode="numeric" aria-label="左側留白（點）"></label>
+    </div>
+    <p class="note">8 點 = 1mm。印出來右邊被切掉，就把印寬調小；整張偏左，就加大左側留白。用下面的測試列印看尺標。</p>
+    <div style="margin-top:8px"><button class="btn ghost small" data-act="testPrint">測試列印（連線後用）</button></div>
+    <h2>廚房單</h2>
+    <div class="seg" id="splitSeg">
+      <button data-act="split" data-v="1" aria-pressed="false">依品項分開印</button>
+      <button data-act="split" data-v="0" aria-pressed="false">合併一張</button>
+    </div>
+    <p class="note">分開印時，每個品項一張單，都印同一個取餐單號，並標示第幾張、共幾張。</p>
     <h2>本次菜單</h2>
     <div class="rows" id="editRows"></div>
     <div style="margin-top:8px"><button class="btn ghost small" data-act="addItem">＋ 新增品項</button></div>
@@ -274,7 +293,7 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     { id: 'm4', name: '水牛城手撕菇', price: 210 }
   ];
   var NOTE_CHIPS = ['不要香菜', '少辣', '加辣', '醬料分開', '不要餐具'];
-  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {} };
+  var state = { shop: '我的攤位', menu: SAMPLE_MENU.slice(), templates: [], orders: [], counter: {}, width: 352, offset: 0, split: true };
   var cart = {}, orderType = '外帶', chipsOn = {}, tab = 'order', lastOrder = null, armed = null, settleDate = null;
 
   function load() {
@@ -351,6 +370,14 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
 
   /* ---------- 單據繪製（58mm = 384 點） ---------- */
   var W = 384, PAD = 6, FONT = '"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+  function curW() { return Math.max(160, Math.min(576, Math.round((+state.width || 352) / 8) * 8)); }
+  function curOff() { return Math.max(0, Math.min(160, Math.round((+state.offset || 0) / 8) * 8)); }
+  function finalize(c) {
+    var off = curOff(); if (!off) return c;
+    var o = document.createElement('canvas'); o.width = c.width + off; o.height = c.height;
+    var x = o.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, o.width, o.height); x.drawImage(c, off, 0);
+    return o;
+  }
   function font(s, b) { return (b ? '700 ' : '400 ') + s + 'px ' + FONT; }
   function wrap(ctx, text, maxW) {
     var out = [], line = '';
@@ -418,24 +445,49 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
       L.push({ t: 'text', s: 18, text: '  ' + money(i.price) + ' × ' + i.qty });
     });
     L.push({ t: 'rule' });
+    L.push({ t: 'text', s: 22, b: true, text: '共 ' + o.items.reduce(function (a, i) { return a + i.qty; }, 0) + ' 份' });
     L.push({ t: 'pair', s: 28, b: true, l: '合計', r: money(o.total) });
     if (o.note) L.push({ t: 'text', s: 18, text: '備註：' + o.note });
     L.push({ t: 'gap', h: 8 }, { t: 'text', s: 20, a: 'center', text: '謝謝光臨' }, { t: 'gap', h: 14 });
     return renderLines(L);
   }
-  function kitchenTicket(o) {
+  function kitchenTicket(o, items, k, n) {
     var L = [
-      { t: 'text', s: 20, a: 'center', text: '廚房單　' + o.time },
+      { t: 'text', s: 20, a: 'center', text: '廚房單　' + o.time + (n > 1 ? '　' + k + '/' + n : '') },
       { t: 'text', s: 64, b: true, a: 'center', text: '#' + pad(o.no) },
       { t: 'text', s: 32, b: true, a: 'center', text: typeLine(o) },
       { t: 'rule' }
     ];
-    o.items.forEach(function (i) { L.push({ t: 'text', s: 34, b: true, text: i.qty + ' × ' + i.name }); L.push({ t: 'gap', h: 4 }); });
+    items.forEach(function (i) { L.push({ t: 'text', s: 34, b: true, text: i.qty + ' × ' + i.name }); L.push({ t: 'gap', h: 4 }); });
     if (o.note) { L.push({ t: 'rule' }); L.push({ t: 'text', s: 30, b: true, text: '※ ' + o.note }); }
     L.push({ t: 'gap', h: 14 });
     return renderLines(L);
   }
-  function makeTicket(kind, o) { return kind === 'kitchen' ? kitchenTicket(o) : customerTicket(o); }
+  function kitchenSet(o) {
+    W = curW();
+    var groups = state.split === false ? [o.items] : o.items.map(function (i) { return [i]; });
+    return groups.map(function (g, k) { return finalize(kitchenTicket(o, g, k + 1, groups.length)); });
+  }
+  function makeTicket(kind, o) { W = curW(); return finalize(customerTicket(o)); }
+
+  function testTicket() {
+    W = curW();
+    var h = 250, c = document.createElement('canvas'); c.width = W; c.height = h;
+    var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, h); x.fillStyle = '#000';
+    x.fillRect(0, 0, W, 3); x.fillRect(0, h - 3, W, 3); x.fillRect(0, 0, 3, h); x.fillRect(W - 3, 0, 3, h);
+    x.textBaseline = 'top'; x.textAlign = 'center';
+    x.font = font(28, true); x.fillText('測試列印', W / 2, 14);
+    x.font = font(18, false); x.fillText('印寬 ' + (W / 8) + 'mm　留白 ' + (curOff() / 8) + 'mm', W / 2, 52);
+    x.fillText('四邊黑線都看得到才算正確', W / 2, 78);
+    for (var mm = 0; mm * 8 <= W; mm += 5) {
+      var px = mm * 8, big = mm % 10 === 0;
+      x.fillRect(Math.min(px, W - 2), 112, 2, big ? 26 : 14);
+      if (big) { x.font = font(16, false); x.textAlign = px === 0 ? 'left' : 'center'; x.fillText(String(mm), Math.min(px + (px === 0 ? 6 : 0), W - 12), 142); }
+    }
+    x.textAlign = 'center'; x.font = font(16, false); x.fillText('尺標單位 mm，看最右邊印到幾', W / 2, 176);
+    x.font = font(22, true); x.textAlign = 'left'; x.fillText('杜卡舒服', 10, 204); x.textAlign = 'right'; x.fillText('$260', W - 10, 204);
+    return finalize(c);
+  }
 
   /* ---------- 藍牙出單 ---------- */
   var SERVICES = ['000018f0-0000-1000-8000-00805f9b34fb', '0000ff00-0000-1000-8000-00805f9b34fb', '0000ffe0-0000-1000-8000-00805f9b34fb',
@@ -476,12 +528,19 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     return out;
   }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var chunk = 100;
   async function writeAll(bytes) {
-    var size = 100;
-    for (var i = 0; i < bytes.length; i += size) {
-      var part = bytes.slice(i, i + size);
-      if (chr.properties.writeWithoutResponse) await chr.writeValueWithoutResponse(part); else await chr.writeValue(part);
-      await sleep(12);
+    var i = 0;
+    while (i < bytes.length) {
+      var part = bytes.slice(i, i + chunk);
+      try {
+        if (chr.properties.writeWithoutResponse) await chr.writeValueWithoutResponse(part); else await chr.writeValue(part);
+      } catch (e) {
+        if (chunk > 20) { chunk = 20; continue; }
+        throw e;
+      }
+      i += part.length;
+      await sleep(chunk > 20 ? 12 : 8);
     }
   }
   async function printCanvas(canvas) {
@@ -502,9 +561,9 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   function openTickets(o, auto) {
     lastOrder = o;
     $('mTitle').textContent = '單號 ' + pad(o.no) + '　' + money(o.total);
-    var cc = makeTicket('customer', o), kc = makeTicket('kitchen', o);
+    var cc = makeTicket('customer', o), ks = kitchenSet(o);
     var box = $('mTickets'); box.innerHTML = '';
-    [['客人單', cc], ['廚房單', kc]].forEach(function (p) {
+    [['客人單', cc]].concat(ks.map(function (c, i) { return ['廚房單' + (ks.length > 1 ? ' ' + (i + 1) + '/' + ks.length : ''), c]; })).forEach(function (p) {
       var d = document.createElement('div'); d.className = 'tk'; d.appendChild(p[1]);
       var l = document.createElement('div'); l.textContent = p[0]; d.appendChild(l); box.appendChild(d);
     });
@@ -516,15 +575,19 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   }
   async function printBoth(o) {
     try {
-      await printCanvas(makeTicket('customer', o)); await sleep(300);
-      await printCanvas(makeTicket('kitchen', o));
-      setStatus('已印出客人單與廚房單。');
+      await printCanvas(makeTicket('customer', o));
+      var ks = kitchenSet(o);
+      for (var i = 0; i < ks.length; i++) { await sleep(300); await printCanvas(ks[i]); }
+      setStatus('已印出客人單 1 張、廚房單 ' + ks.length + ' 張。');
     } catch (e) { setStatus(btMessage(e), true); }
   }
   async function reprint(kind) {
     if (!lastOrder) return;
     setStatus('列印中…');
-    try { await printCanvas(makeTicket(kind, lastOrder)); setStatus('已印出' + (kind === 'kitchen' ? '廚房單' : '客人單') + '。'); }
+    try {
+      if (kind === 'kitchen') { var ks = kitchenSet(lastOrder); for (var i = 0; i < ks.length; i++) { await printCanvas(ks[i]); await sleep(300); } setStatus('已印出廚房單 ' + ks.length + ' 張。'); }
+      else { await printCanvas(makeTicket('customer', lastOrder)); setStatus('已印出客人單。'); }
+    }
     catch (e) { setStatus(btMessage(e), true); }
   }
 
@@ -625,6 +688,11 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   /* ---------- 菜單編輯 ---------- */
   function renderMenuEdit() {
     $('shopInp').value = state.shop;
+    var PRE = { 50: 352, 58: 384, 80: 576 };
+    document.querySelectorAll('#paperSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(curW() === PRE[x.dataset.v])); });
+    document.querySelectorAll('#splitSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String((state.split !== false) === (x.dataset.v === '1'))); });
+    if (document.activeElement !== $('widthInp')) $('widthInp').value = curW();
+    if (document.activeElement !== $('offInp')) $('offInp').value = curOff();
     $('editRows').innerHTML = state.menu.map(function (it) {
       return '<div class="edit"><input class="field" data-f="name" data-id="' + it.id + '" value="' + esc(it.name) + '" aria-label="品名">' +
         '<input class="field num" data-f="price" data-id="' + it.id + '" value="' + it.price + '" inputmode="numeric" aria-label="價格">' +
@@ -667,6 +735,9 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
     else if (a === 'connect') connect().then(function () { toast('出單機已連線'); }).catch(function (er) { toast(btMessage(er)); });
     else if (a === 'view') { var o = state.orders.find(function (x) { return x.id === id; }); if (o) openTickets(o, false); }
     else if (a === 'void') arm('v' + id, function () { var o = state.orders.find(function (x) { return x.id === id; }); if (o) { o.void = true; save(); renderOrders(); toast('已作廢'); } });
+    else if (a === 'paper') { state.width = { 50: 352, 58: 384, 80: 576 }[v]; save(); renderMenuEdit(); toast(v + 'mm 紙，印寬 ' + (curW() / 8) + 'mm'); }
+    else if (a === 'split') { state.split = v === '1'; save(); renderMenuEdit(); toast(state.split ? '廚房單依品項分開印' : '廚房單合併一張'); }
+    else if (a === 'testPrint') { toast('列印中…'); printCanvas(testTicket()).then(function () { toast('已送出測試單'); }).catch(function (er) { toast(btMessage(er)); }); }
     else if (a === 'copyCsv') copyCsv();
     else if (a === 'setNext') setNext();
     else if (a === 'export') exportData();
@@ -689,7 +760,9 @@ textarea.field { padding: 10px 14px; min-height: 96px; font-family: var(--font-n
   });
   document.addEventListener('input', function (e) {
     var t = e.target;
-    if (t.id === 'shopInp') { state.shop = t.value.trim() || '我的攤位'; $('shopTitle').textContent = state.shop; save(); }
+    if (t.id === 'widthInp') { var wv = parseInt(t.value, 10); if (wv) { state.width = wv; save(); } }
+    else if (t.id === 'offInp') { var ov = parseInt(t.value, 10); state.offset = isNaN(ov) ? 0 : ov; save(); }
+    else if (t.id === 'shopInp') { state.shop = t.value.trim() || '我的攤位'; $('shopTitle').textContent = state.shop; save(); }
     else if (t.dataset && t.dataset.f) {
       var it = state.menu.find(function (x) { return x.id === t.dataset.id; }); if (!it) return;
       if (t.dataset.f === 'name') it.name = t.value; else it.price = Math.max(0, parseInt(t.value, 10) || 0);
